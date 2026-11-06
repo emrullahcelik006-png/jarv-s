@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+*.log
+storage/
+*.db
+*.db-journal
+*.bak
+*.mp3
+*.png
+.freebuff/

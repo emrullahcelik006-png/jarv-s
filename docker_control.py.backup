@@ -1,0 +1,61 @@
+﻿import asyncio
+import shutil
+import subprocess
+from core.logger import setup_logger
+from core.types import RiskLevel
+from tools.base import BaseTool, ToolResult
+
+logger = setup_logger("DockerTools")
+
+
+class DockerControlTool(BaseTool):
+    name = "docker_control"
+    description = "Docker container ve compose komutlarini (ps, logs, up, down, build) otonom yonetir."
+    risk_level = RiskLevel.HIGH
+
+    async def execute(self, action: str = "ps", container_name: str = "", compose_file: str = "", **kwargs) -> ToolResult:
+        try:
+            # Docker sistemde kurulu mu kontrol et
+            if not shutil.which("docker"):
+                return ToolResult(
+                    success=True,
+                    output="ℹ️ **[DOCKER TESPİTİ]**: Docker bu bilgisayarda kurulu değil veya PATH sistem değişkeninde bulunamadı. "
+                           "Docker Desktop indirmek isterseniz resmi indirme sayfasını sizin için açabilirim."
+                )
+
+            act = action.lower().strip()
+            if act in ("ps", "list", "containers"):
+                cmd = "docker ps -a"
+            elif act == "logs":
+                cmd = f"docker logs --tail 50 {container_name}" if container_name else "docker ps"
+            elif act in ("up", "compose_up"):
+                f_flag = f"-f {compose_file} " if compose_file else ""
+                cmd = f"docker compose {f_flag}up -d"
+            elif act in ("down", "compose_down"):
+                f_flag = f"-f {compose_file} " if compose_file else ""
+                cmd = f"docker compose {f_flag}down"
+            elif act == "build":
+                cmd = "docker build -t jarvis_app ."
+            else:
+                cmd = f"docker {action}"
+
+            res = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                encoding="utf-8",
+                errors="replace"
+            )
+
+            if res.returncode == 0:
+                out_text = res.stdout.strip() or "Docker işlemi başarıyla tamamlandı."
+                return ToolResult(success=True, output=f"🐳 **[DOCKER EYLEMİ İCRA EDİLDİ]** (`{cmd}`)\n\n```text\n{out_text}\n```")
+            else:
+                err_text = res.stderr.strip() or res.stdout.strip()
+                return ToolResult(success=False, output=res.stdout, error=f"Docker Hatası [{res.returncode}]: {err_text}")
+        except Exception as e:
+            logger.error(f"Docker hatasi: {e}")
+            return ToolResult(success=False, output=None, error=str(e))
