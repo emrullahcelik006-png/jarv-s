@@ -1,0 +1,138 @@
+﻿import json
+import re
+from typing import Any, Dict, Optional
+from core.config import get_settings
+from core.json_utils import parse_json_safely
+from core.logger import setup_logger
+from core.policy import SecurityPolicyEngine
+from llm.base import BaseLLMProvider, LLMMessage
+from llm.ollama_provider import OllamaProvider
+from llm.groq_provider import GroqProvider
+from tasks.models import RiskLevel
+from tools.registry import ToolRegistry
+
+logger = setup_logger("ActionDispatcher")
+settings = get_settings()
+
+PURE_CHAT_PATTERNS = [
+    r"^(?:merhaba|selam|naber|nasılsın|nasilsin|günaydın|gunaydin|hey|jarvis|hi|hello)\b",
+    r"^(?:ne\s+haber|naptın|ne\s+yapıyorsun|kimsin|adın\s+ne|sen\s+kimsin)\b",
+    r"^(?:ne\s+yapabilirsin|yeteneklerin\s+neler|neler\s+yapabilirsin|neyi\s+yapabilirsin|yardım|help)\b",
+    r"^(?:teşekkür\w*|sağol\w*|harikasın|tamam|anlamadım|anlamadim|ok|okay)\b",
+]
+
+TURKISH_STOP_WORDS_PATTERN = r"\b(lütfen|lutfe|aç\w*|başlat\w*|çalıştır\w*|oyun\w*|uygulama\w*|program\w*|gir\w*|bak\w*|ara\w*|özetle\w*)\b"
+
+DISPATCHER_SYSTEM_PROMPT = r"""You are the Lead Action Dispatcher of the JARVIS AI Agent operating on a Turkish Windows PC.
+Analyze the user's Turkish natural language input and select EXACTLY ONE tool ONLY IF the user intends to execute a computer action.
+
+AVAILABLE TOOLS SCHEMA:
+{tools_schema}
+
+MUST REPLY ONLY WITH A VALID JSON OBJECT:
+{{
+    "requires_tool": true,
+    "tool_name": "exact_tool_name",
+    "arguments": {{ "param_name": "value" }},
+    "reasoning": "brief explanation"
+}}"""
+
+
+class ActionDispatcher:
+    def __init__(self, registry: ToolRegistry, provider: Optional[BaseLLMProvider] = None):
+        self.registry = registry
+        self.provider = provider or OllamaProvider(default_model=settings.DEFAULT_FAST_MODEL)
+
+    async def dispatch(self, user_input: str, history_context: str = "", provider_override: Optional[str] = None) -> Dict[str, Any]:
+        clean_input = user_input.replace('"', '').replace("'", "").strip()
+        lower = clean_input.lower()
+
+        # 1. PIP INSTALLER FAST PATH
+        if any(kw in lower for kw in ["kütüphane", "kutuphane", "pip", "install"]) or any(v in lower for v in ["indir", "yükle", "yukle", "kur"]):
+            if not any(skip in lower for skip in ["uygulama", "oyun", "pencere", "ekran", "ses"]):
+                pkg_match = re.search(r"(\w+)\s*(?:kütüphane\w*|kutuphane\w*|paket\w*)?\s*(?:indir\w*|yükle\w*|yukle\w*|kur\w*)", lower)
+                raw_pkg = pkg_match.group(1) if pkg_match else lower.split()[0]
+                clean_pkg = re.sub(r"\b(indir|yükle|yukle|kur|pip|install|kütüphanesini|kütüphane)\b", "", raw_pkg, flags=re.IGNORECASE).strip() or raw_pkg
+                
+                risk, req_app = SecurityPolicyEngine.evaluate_risk("pip_installer", {"package_name": clean_pkg})
+                return {
+                    "matched": True,
+                    "tool_name": "pip_installer",
+                    "arguments": {"package_name": clean_pkg},
+                    "risk_level": risk,
+                    "requires_approval": req_app,
+                    "reasoning": f"Direct PIP install trigger for '{clean_pkg}'"
+                }
+
+        # 2. PURE CHAT BYPASS
+        if any(re.search(pat, lower) for pat in PURE_CHAT_PATTERNS) and not any(kw in lower for kw in ["aç", "kapat", "ara", "sil", "kur", "yükle", "liste"]):
+            return {"matched": False, "tool_name": None, "arguments": {}}
+
+        # 3. HAFIZA SORGULAMA
+        if any(kw in lower for kw in ["hafıza", "hafizadaki", "kullanıcı bilgileri", "benim hakkımda", "bilgilerimi listele"]):
+            return {
+                "matched": True,
+                "tool_name": "memory_inspector",
+                "arguments": {"action": "list"},
+                "risk_level": RiskLevel.LOW,
+                "requires_approval": False,
+                "reasoning": "Direct Memory Inspection"
+            }
+
+        # 4. SES SABİTLEME VE ORANLI KONTROL
+        if any(kw in lower for kw in ["sesi kapat", "ses kapat", "sessize al", "mute"]):
+            return {"matched": True, "tool_name": "system_hardware_control", "arguments": {"action": "volume_mute"}, "risk_level": RiskLevel.LOW, "requires_approval": False, "reasoning": "Mute"}
+
+        vol_match = re.search(r"ses[iı]?\s*(\d+)\s*(yükselt\w*|arttır\w*|aç\w*|kıs\w*|azalt\w*)", lower)
+        if vol_match:
+            amount = int(vol_match.group(1))
+            verb = vol_match.group(2)
+            act = "volume_up" if any(v in verb for v in ["yükselt", "arttır", "aç"]) else "volume_down"
+            return {"matched": True, "tool_name": "system_hardware_control", "arguments": {"action": act, "value": amount}, "risk_level": RiskLevel.LOW, "requires_approval": False, "reasoning": f"Volume {act}"}
+
+        # 5. UYGULAMA AÇMA
+        launch_match = re.search(r"^(?:lütfen\s+)?(.+?)\s+(?:aç\w*|başlat\w*|çalıştır\w*)$", lower)
+        if launch_match:
+            target = launch_match.group(1).strip()
+            if not any(x in target for x in ["ses", "ekran", "pencere", "bildirim", "hafıza", "rapor", "kütüphane", "internette", "google"]):
+                return {"matched": True, "tool_name": "universal_launcher", "arguments": {"target": target}, "risk_level": RiskLevel.LOW, "requires_approval": False, "reasoning": "App Launch"}
+
+        # 6. DYNAMIC LLM DISPATCHER
+        active_provider = GroqProvider() if provider_override == "groq" else self.provider
+        tools_schema_str = json.dumps(self.registry.list_tools(), indent=2, ensure_ascii=False)
+        system_prompt = f"Select ONE tool for input: {user_input}. Tools: {tools_schema_str}. Reply valid JSON only."
+
+        messages = [
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=clean_input)
+        ]
+
+        try:
+            response = await active_provider.chat(messages=messages, temperature=0.0)
+            data = parse_json_safely(response.content)
+            tool_name = data.get("tool_name")
+
+            if data.get("requires_tool") and tool_name and self.registry.get(tool_name):
+                args = data.get("arguments", {})
+                risk, req_app = SecurityPolicyEngine.evaluate_risk(tool_name, args)
+                return {
+                    "matched": True, "tool_name": tool_name, "arguments": args,
+                    "risk_level": risk, "requires_approval": req_app, "reasoning": data.get("reasoning")
+                }
+        except Exception: pass
+
+        # 7. SEARCH FALLBACK RULE (Ensures web_search match when LLM is offline/mocked in unit tests)
+        if any(re.search(r"\b" + kw + r"\w*", lower) for kw in ["ara", "search", "google", "internette"]):
+            clean_q = re.sub(r"\b(internette|google|arama\s+yap|ara)\b", "", lower, flags=re.IGNORECASE).strip() or clean_input
+            selected_tool = "web_search" if self.registry.get("web_search") else "autonomous_research"
+            if self.registry.get(selected_tool):
+                return {
+                    "matched": True,
+                    "tool_name": selected_tool,
+                    "arguments": {"query": clean_q},
+                    "risk_level": RiskLevel.LOW,
+                    "requires_approval": False,
+                    "reasoning": f"Rule fallback for {selected_tool}"
+                }
+
+        return {"matched": False, "tool_name": None, "arguments": {}}
