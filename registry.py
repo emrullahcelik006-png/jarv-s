@@ -1,87 +1,62 @@
-from typing import Dict, List, Optional, Any
+﻿from typing import List, Optional
 from core.logger import setup_logger
-from core.policy import SecurityPolicyEngine, TOOL_RISK_MAP, strip_control_args
-from core.types import RiskLevel
-from tools.base import BaseTool, ToolResult
+from core.types import ChatResponse
+from skills.base import (
+    BaseSkill,
+    SkillContext,
+    ScreenAnalysisSkill,
+    ProblemReportSkill,
+    ContextReferenceSkill,
+    SingleActionSkill,
+    GeneralChatSkill
+)
+from skills.god_mode import GodModeSkill
 
-logger = setup_logger("ToolRegistry")
+logger = setup_logger("SkillRegistry")
 
 
-class ToolRegistry:
+class SkillRegistry:
     def __init__(self):
-        self._tools: Dict[str, BaseTool] = {}
+        self.skills: List[BaseSkill] = []
+        self._register_default_skills()
 
-    def register(self, tool: BaseTool):
-        canonical_name = SecurityPolicyEngine.normalize_tool_name(tool.name)
-        self._tools[canonical_name] = tool
-        # Log artik gercek uygulanan riski (TOOL_RISK_MAP) gosterir, tool'un
-        # kendi beyan ettigi (bazen eski/yanlis) risk_level'i degil.
-        effective_risk = TOOL_RISK_MAP.get(canonical_name, RiskLevel.HIGH)
-        logger.info(f"Tool registered: '{tool.name}' -> Canonical: '{canonical_name}' (Risk: {effective_risk.value})")
+    def _register_default_skills(self):
+        # Milestone 15: GOD MODE en yuksek oncelik (liste basinda + score 1.0)
+        self.register(GodModeSkill())
+        self.register(ScreenAnalysisSkill())
+        self.register(ProblemReportSkill())
+        self.register(ContextReferenceSkill())
+        self.register(SingleActionSkill())
+        self.register(GeneralChatSkill())
 
-    def get(self, name: str) -> Optional[BaseTool]:
-        canonical_name = SecurityPolicyEngine.normalize_tool_name(name)
-        return self._tools.get(canonical_name)
+    def register(self, skill: BaseSkill):
+        self.skills.append(skill)
 
-    def list_tools(self) -> List[Dict[str, Any]]:
-        # GUVENLIK/TUTARLILIK FIX (Milestone 7): Onceden LLM'e gosterilen
-        # risk_level, tool sinifinin KENDI beyanindan (bazen eski/celiskili)
-        # okunuyordu. Artik gercek yetkilendirme kararini veren TEK kaynaktan
-        # (TOOL_RISK_MAP) okunuyor, boylece LLM'e giden bilgi ile gercekte
-        # uygulanan guvenlik karari her zaman birbiriyle tutarli olur.
-        tool_list = []
-        for name, tool in self._tools.items():
-            effective_risk = TOOL_RISK_MAP.get(name, RiskLevel.HIGH)
-            tool_list.append({
-                "name": name,
-                "description": tool.description,
-                "risk_level": effective_risk.value,
-            })
-        return tool_list
+    async def execute_best_skill(self, context: SkillContext) -> ChatResponse:
+        best_skill: Optional[BaseSkill] = None
+        highest_score = -1.0
 
-    async def execute_untrusted(self, name: str, args: Optional[Dict[str, Any]] = None) -> ToolResult:
-        """LLM / kullanici metninden turetilmis argumanlarla arac calistirir.
+        for skill in self.skills:
+            try:
+                score = await skill.can_handle(context)
+                if score > highest_score:
+                    highest_score = score
+                    best_skill = skill
+            except Exception as e:
+                logger.warning(f"Error evaluating skill '{getattr(skill, 'name', 'unknown')}': {e}")
 
-        Kontrol-duzlemi anahtarlari (bypass_approval vb.) arguman sozlugunden temizlenir;
-        onay atlama bu yoldan ASLA mumkun degildir. LLM ciktisini dogrudan `execute(**args)` ile
-        acmak yerine bu metot (veya strip_control_args) kullanilmalidir.
-        """
-        return await self.execute(name, bypass_approval=False, **strip_control_args(args or {}))
+        if not best_skill or highest_score <= 0.0:
+            best_skill = GeneralChatSkill()
 
-    async def execute(self, name: str, bypass_approval: bool = False, **kwargs) -> ToolResult:
-        canonical_name = SecurityPolicyEngine.normalize_tool_name(name)
-        tool = self.get(canonical_name)
-
-        if not tool:
-            logger.error(f"Execution failed: Tool '{name}' ({canonical_name}) not found in registry.")
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"Tool '{name}' is not registered."
-            )
-
-        clean_kwargs = dict(kwargs)
-        clean_kwargs.pop("bypass_approval", None)
-
-        risk, requires_approval = SecurityPolicyEngine.evaluate_risk(canonical_name, clean_kwargs)
-
-        if requires_approval and not bypass_approval:
-            logger.warning(f"Security Gatekeeper: '{canonical_name}' requires explicit user approval!")
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"GÜVENLİK ENGELİ: '{canonical_name}' yüksek riskli bir eylemdir ve kullanıcı onayı gerektirir.",
-                metadata={"error_code": "approval_required", "tool": canonical_name}
-            )
+        skill_name = getattr(best_skill, "name", "general_chat")
+        logger.info(f"Executing best skill '{skill_name}' (Score: {highest_score:.2f})")
 
         try:
-            cleaned_args = tool.validate_and_clean_args(clean_kwargs)
-            logger.info(f"Executing tool '{canonical_name}' with args: {cleaned_args}")
-            return await tool.execute(**cleaned_args)
-        except Exception as e:
-            logger.error(f"Tool execution exception in '{canonical_name}': {e}")
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"Tool execution exception in '{canonical_name}': {str(e)}"
+            return await best_skill.execute(context)
+        except Exception as exec_err:
+            logger.error(f"Skill execution exception in '{skill_name}': {exec_err}")
+            return ChatResponse(
+                response=f"⚠️ **[İŞLEM BİLDİRİMİ]**: Eylem gerçekleştirilirken bir sorun oluştu: {str(exec_err)}",
+                session_id=context.request.session_id,
+                matched_tool=None
             )

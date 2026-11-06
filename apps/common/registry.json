@@ -1,0 +1,58 @@
+﻿{
+  "apps": {
+    "youtube": {
+      "canonical_name": "youtube",
+      "aliases": ["youtube", "yotube", "yutub", "yt"],
+      "target_path": "https://www.youtube.com",
+      "launch_type": "url"
+    },
+    "google chrome": {
+      "canonical_name": "google chrome",
+      "aliases": ["chrome", "google chrome", "gugil", "corome", "crome"],
+      "target_path": "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Google Chrome.lnk",
+      "launch_type": "shortcut"
+    },
+    "microsoft edge": {
+      "canonical_name": "microsoft edge",
+      "aliases": ["edge", "microsoft edge", "edg"],
+      "target_path": "msedge.exe",
+      "launch_type": "command"
+    },
+    "steam": {
+      "canonical_name": "steam",
+      "aliases": ["steam", "stim", "stima", "steami"],
+      "target_path": "C:\\Users\\cilek\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Steam\\Steam.lnk",
+      "launch_type": "shortcut"
+    },
+    "winrar": {
+      "canonical_name": "winrar",
+      "aliases": ["winrar", "rar", "zip"],
+      "target_path": "C:\\Program Files\\WinRAR\\WinRAR.exe",
+      "launch_type": "shortcut"
+    },
+    "windows powershell": {
+      "canonical_name": "windows powershell",
+      "aliases": ["powershell", "ps", "windows powershell"],
+      "target_path": "C:\\Users\\cilek\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Windows PowerShell\\Windows PowerShell.lnk",
+      "launch_type": "shortcut"
+    },
+    "visual studio code": {
+      "canonical_name": "visual studio code",
+      "aliases": ["vs code", "vscode", "code", "visual studio code"],
+      "target_path": "C:\\Users\\cilek\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Visual Studio Code\\Visual Studio Code.lnk",
+      "launch_type": "shortcut"
+    },
+    "devin": {
+      "canonical_name": "devin",
+      "aliases": ["devin", "devin ai"],
+      "target_path": "C:\\Users\\cilek\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Devin\\Devin.lnk",
+      "launch_type": "shortcut"
+    },
+    "cursor": {
+      "canonical_name": "cursor",
+      "aliases": ["cursor", "kursor", "cursoru"],
+      "target_path": "C:\\Users\\cilek\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Cursor\\Cursor.lnk",
+      "launch_type": "shortcut"
+    }
+  }
+}
